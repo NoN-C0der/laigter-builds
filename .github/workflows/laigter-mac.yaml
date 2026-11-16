@@ -1,24 +1,44 @@
-name: MacOS
-on: [push, workflow_dispatch]
-      
+# Упрощённый workflow для сборки Laigter под macOS.
+# Основан на официальном .github/workflows/laigter-mac.yaml из репозитория,
+# но без шагов публикации на itch.io (butler) — они нужны только мейнтейнеру.
+#
+# Куда положить: .github/workflows/laigter-mac.yaml в вашем репозитории.
+#
+# Результат запуска (вкладка Actions -> выбрать запуск -> Artifacts -> mac-artifacts):
+#   laigter-mac.zip — laigter.app после macdeployqt (все Qt-библиотеки внутри).
+#
+# Запускается автоматически на каждый push и вручную кнопкой "Run workflow".
+# macOS-latest сейчас — Apple Silicon (arm64); Qt 6 для macOS собирается
+# как universal2, поэтому .app запускается и на Intel-маках.
+
+name: macOS build
+
+on:
+  push:
+  workflow_dispatch:
+
 jobs:
   buildMac:
-    runs-on: macOS-latest
+    runs-on: macos-latest
     steps:
-    - name: checkout sources
+    - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Install Qt
+    - name: Install Qt (clang_64)
       uses: jurplel/install-qt-action@v4
       with:
+        # 6.11.1 для macOS работает: разделение репозитория Qt по тулчейнам
+        # (qt6_6111_mingw) касается только Windows
         version: '6.11.1'
         arch: 'clang_64'
         modules: 'qtimageformats'
-     
-    - name: build Laigter
+        # Кэшировать установку Qt, чтобы повторные сборки не качали её заново
+        cache: true
+
+    - name: Build Laigter
       shell: bash
       env:
-        # On a tag, the app reports the tag instead of the fallback in the pro
+        # На теге приложение покажет номер тега вместо "dev"
         QMAKE_VERSION_ARG: ${{ startsWith(github.ref, 'refs/tags/') && format('VERSION={0}', github.ref_name) || '' }}
       run: |
         qmake CONFIG+=release PREFIX=/usr $QMAKE_VERSION_ARG
@@ -31,32 +51,8 @@ jobs:
         ditto laigter.app laigter-mac/laigter.app
         ditto -c -k --sequesterRsrc --keepParent laigter.app laigter-mac.zip
 
-    - name: Upload macOS artifacts
+    - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
         name: mac-artifacts
         path: laigter-mac.zip
-
-    - name: Install Butler
-      if: startsWith(github.ref, 'refs/tags/')
-      shell: bash
-      run: |
-        set -eu
-        case "$(uname -m)" in
-          arm64) BUTLER_PLATFORM=darwin-arm64 ;;
-          x86_64) BUTLER_PLATFORM=darwin-amd64 ;;
-          *) echo "Unsupported macOS architecture: $(uname -m)"; exit 1 ;;
-        esac
-        mkdir .butler
-        curl -L -o butler.zip "https://broth.itch.zone/butler/${BUTLER_PLATFORM}/LATEST/archive/default"
-        ditto -x -k butler.zip .butler
-        chmod +x .butler/butler
-        .butler/butler -V
-
-    - name: Publish macOS build to itch.io
-      if: startsWith(github.ref, 'refs/tags/')
-      shell: bash
-      env:
-        BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
-      run: |
-        .butler/butler push laigter-mac azagaya/laigter:mac --userversion "$GITHUB_REF_NAME"
