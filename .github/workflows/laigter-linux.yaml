@@ -1,43 +1,59 @@
-name: Ubuntu Latest
-on: [push, workflow_dispatch]
+# Упрощённый workflow для сборки Laigter под Linux (AppImage).
+# Основан на официальном .github/workflows/laigter-linux.yaml из репозитория,
+# но без шагов публикации на itch.io (butler) — они нужны только мейнтейнеру.
+#
+# Куда положить: .github/workflows/laigter-linux.yaml в вашем репозитории.
+#
+# Результат запуска (вкладка Actions -> выбрать запуск -> Artifacts -> AppImage-x86_64):
+#   binaries/Laigter-x86_64.AppImage — самодостаточный AppImage,
+#   запускается на большинстве Linux-дистрибутивов без установки Qt.
+#
+# Запускается автоматически на каждый push и вручную кнопкой "Run workflow".
+
+name: Linux build (AppImage)
+
+on:
+  push:
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-24.04
+    # Официальная сборка идёт в контейнере Arch Linux: Qt 6 ставится из pacman,
+    # а AppImage собирает quick-sharun (pkgforge-dev) — без ручного linuxdeploy
     container: ghcr.io/pkgforge-dev/archlinux:latest
 
     steps:
-    - name: checkout sources
+    - name: Checkout
       uses: actions/checkout@v5
 
     - name: Preparing Container
       uses: pkgforge-dev/anylinux-setup-action@v1
-        
+
     - name: Install dependencies & Qt6 on Arch
       run: |
         set -eu
         pacman -Syu --noconfirm
-        # patchelf is what quick-sharun uses to rewrite the rpaths, and the
-        # qt6ct, kvantum and lxqt plugins are what it bundles so the app can
-        # follow the theme of whatever desktop it ends up running on
+        # patchelf нужен quick-sharun для правки rpath, а qt6ct, kvantum и lxqt
+        # бандлятся в AppImage, чтобы приложение следовало теме рабочего стола
         pacman -S --needed --noconfirm base-devel git make patchelf unzip qt6-base qt6-tools qt6-imageformats qt6ct kvantum lxqt-qtplugin
         get-debloated-pkgs mesa-nano libxml2-mini opus-mini
         ls /usr/bin/qmake*
-        # Arch is rolling, so write down which Qt this AppImage was built with
+        # Arch rolling — запишем, с каким Qt собран этот AppImage
         pacman -Q qt6-base qt6-tools qt6-imageformats
 
     - name: Build Laigter
       shell: bash
       env:
-        # On a tag, the app reports the tag instead of the fallback in the pro
+        # На теге приложение покажет номер тега вместо "dev"
         QMAKE_VERSION_ARG: ${{ startsWith(github.ref, 'refs/tags/') && format('VERSION={0}', github.ref_name) || '' }}
       run: |
         echo "RELEASE_VERSION=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
         /usr/bin/qmake6 CONFIG+=release PREFIX=/usr $QMAKE_VERSION_ARG
         make -j$(nproc)
         make INSTALL_ROOT=appdir install
-        
-    - name: Create Appimage
+
+    - name: Create AppImage
       run: |
         set -eu
         curl -Lo quick-sharun https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/main/useful-tools/quick-sharun.sh
@@ -47,29 +63,13 @@ jobs:
         export OUTPATH=./binaries
         export ICON=dist/laigter.png
         export DESKTOP=dist/laigter.desktop
+        # Приложение рендерит через OpenGL — тянем GL-библиотеки в бандл
         export DEPLOY_OPENGL=1
         ./quick-sharun appdir/usr/bin/laigter
         ./quick-sharun --make-appimage
 
-    - name: Upload Linux artifacts
+    - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
         name: AppImage-x86_64
         path: binaries
-
-    - name: Install Butler
-      if: startsWith(github.ref, 'refs/tags/')
-      run: |
-        set -eu
-        mkdir .butler
-        curl -L -o butler.zip https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default
-        unzip -q butler.zip -d .butler
-        chmod +x .butler/butler
-        .butler/butler -V
-
-    - name: Publish Linux build to itch.io
-      if: startsWith(github.ref, 'refs/tags/')
-      env:
-        BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
-      run: |
-        .butler/butler push binaries azagaya/laigter:linux --userversion "$GITHUB_REF_NAME"
